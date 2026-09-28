@@ -105,6 +105,7 @@ class FakeFolder {
     this.id = 'folder-' + nextId++;
     this._files = [];
     this._folders = [];
+    this._parents = [];
     world.byId[this.id] = this;
   }
 
@@ -143,6 +144,10 @@ class FakeFolder {
     return iterator(this._folders.filter((f) => f.name === name));
   }
 
+  getParents() {
+    return iterator(this._parents);
+  }
+
   getFilesByName(name) {
     return iterator(this._files.filter((f) => f.name === name));
   }
@@ -154,6 +159,7 @@ class FakeFolder {
       throw new Error('create denied: ' + name);
     }
     const sub = new FakeFolder(name, this.world);
+    sub._parents.push(this);
     this._folders.push(sub);
     this.world.stats.createdFolders.push(name);
     if (p.onCreateFolder) p.onCreateFolder(name, this.world);
@@ -206,7 +212,9 @@ function buildTree(spec, world) {
     folder._files.push(new FakeFile(typeof f === 'string' ? f : f.name, world));
   });
   (spec.folders || []).forEach((s) => {
-    folder._folders.push(buildTree(s, world));
+    const sub = buildTree(s, world);
+    sub._parents.push(folder);
+    folder._folders.push(sub);
   });
   return folder;
 }

@@ -1,113 +1,97 @@
-# Cloner: learn Google Apps Script with a useful Drive automation
+# Cloner: learn Google Apps Script with one Drive button
 
 ![Cloner folder icon](assets/cloner-folder-branch-128.png)
 
-Create a named copy of a Google Drive folder template—including nested folders and files—from a sidebar in Drive. Use it for a new project, client, course, or event instead of rebuilding the same folder structure by hand.
+Create one regular My Drive folder named **Clonable**. Press **Copy to Cloned** in the Drive sidebar. Cloner creates **Cloned alongside Clonable in the same parent**, then copies the files and nested folders in the background. No name input, template selection, or separate destination setup.
 
-This is a cleaned-up teaching copy of [bigpager/DavisGroup](https://github.com/bigpager/DavisGroup), based on commit `128158cd672323c76984cc4dc459cd426e71e94f`. The original project stays unchanged. Its organization-specific folder IDs and development history are **not** included in this copy.
+**[Illustrated walkthrough](https://marclar.tech/blog/google-apps-script-drive-folder-automation/)** · **[Copyable AI-agent prompt](docs/customize-with-ai.md)** · **[Cleanup review and limitations](docs/cleanup-review.md)**
 
-**[Read the illustrated walkthrough](https://marclar.tech/blog/google-apps-script-drive-folder-automation/)** · **[Copy the AI-agent customization prompt](docs/customize-with-ai.md)** · **[Cleanup review and limitations](docs/cleanup-review.md)**
+## What this teaches
 
-## What it does—and does not do
+Google Apps Script runs JavaScript instructions on Google's servers. Its built-in services can automate Drive, Gmail, and Sheets. This app uses Drive only: it copies folders and files, including a Sheet as a file. It does not send email or edit spreadsheet cells. See [Google's service guide](https://developers.google.com/apps-script/guides/services).
 
-- Offers Renter, Buyer, Commercial Lease, and Listing buttons inherited from the original real-estate workflow. You can change the display labels for your own workflow.
-- Copies files and recreates nested folders in a new destination folder.
-- Runs the copying work in background triggers, saves its position, and offers progress checks and recovery.
-- Refuses a destination name that already exists in the selected parent folder.
-- Reports skipped items; **Done does not mean every item copied successfully**. Always inspect the skipped list and resulting folder.
+Cloner verifies that the configured source is named exactly `Clonable`, resolves exactly one accessible parent, and refuses an existing sibling folder named `Cloned`. A wrong source name or no accessible parent fails before output is created. Use a regular folder in My Drive, not My Drive itself, a shortcut, or a shared-drive folder. You need source read/copy access and **write access to its parent**.
 
-It does **not** send Gmail messages, read spreadsheet cells, duplicate source sharing permissions, or provide a backup/synchronization service. A Google Sheet can be copied as a Drive file; automating its contents is a separate feature. Recovery uses names and counts rather than a durable source-to-copy identity map. Do not edit the template or destination while a job is running or paused. Simultaneous use by several people is not hardened for production.
+The app never overwrites or deletes an existing Cloned. **Resume** continues the saved job in the same partial Cloned. **Done does not guarantee every item copied**: inspect skipped items and actual output. This is not backup or synchronization software, and it does not reproduce source sharing settings.
 
-## Start with a disposable sandbox
+## 1. Create only the source and sample contents
 
-You need a Google account that can use Apps Script and install a test Google Workspace add-on. A work/school administrator may restrict this. No paid Google Cloud services, API keys, or local Node installation are required for the browser setup. Node is only needed for the optional local tests.
+Use a desktop browser and the same Google account throughout. Work/school administrators may restrict Apps Script or test add-ons. Start with invented data, not important documents. A separate practice account with no sensitive files is safer because authorization is broad.
 
-In **My Drive**, make a private `Cloner Sandbox` folder with these children:
+In **My Drive**, create `Clonable` and this tiny example:
 
 ```text
-Cloner Sandbox/
-├── Renter Template/
-│   ├── Welcome (a sample Google Doc)
-│   └── Planning/
-│       └── Checklist (a sample Google Sheet)
-├── Buyer Template/
-├── Commercial Template/
-├── Listing Template/
-├── Clients/
-└── Listings/
+My Drive/
+└── Clonable/
+    ├── Welcome Doc
+    ├── Checklist Sheet
+    └── Documents/
+        └── Samples/
+            └── sample.txt
 ```
 
-Use invented information. Keep `Clients` and `Listings` **outside** all the template trees. Never point a destination into its source template: the copier can encounter its own output. Do not use client records, shared drives, or your only copy of important documents for the first test.
+Make Welcome Doc a Google Doc containing “Practice only.” Make Checklist Sheet a Google Sheet with “Practice task” in A1. Add a small harmless text file under Documents/Samples. Optionally create a private **Cloner Sandbox** in My Drive and put Clonable inside it instead. That sandbox becomes the parent; the app will create Cloned there. **Do not create Cloned yourself. No destination folder is needed.** Keep the parent's sharing restricted for this test.
 
-## Install your own test add-on
+## 2. Install your own test add-on
 
-1. Open [script.google.com](https://script.google.com/) using the same account as the sandbox. Create a **New project** and name it `Drive Cloner Sandbox`.
-2. Replace the editor's `Code.gs` with this repository's [`Code.gs`](Code.gs). Do not paste the `tests/` files into Apps Script.
-3. Open **Project Settings** (gear icon) and enable **Show "appsscript.json" manifest file in editor**. Return to the editor and replace the manifest with [`appsscript.json`](appsscript.json). Keep the V8 runtime. Change `timeZone` if appropriate.
-4. Configure the six IDs below in your **private Apps Script editor**. For each folder, open it in Drive and copy the portion after `/folders/` in its URL, excluding query parameters. Paste only that ID between the existing quotes—not the whole URL.
+1. Open [script.google.com](https://script.google.com/) and create a **New project**, named `Drive Cloner Sandbox`.
+2. Replace the editor's `Code.gs` with this repository's complete [`Code.gs`](Code.gs). Do not paste tests or documentation into Apps Script.
+3. Under **Project Settings**, enable **Show "appsscript.json" manifest file in editor**. Replace that file with [`appsscript.json`](appsscript.json). Keep V8; adjust the timezone if needed. The manifest declares the add-on host, callback, logo, and permissions.
+4. Open **Clonable** in Drive. Copy only the ID after `/folders/` in its URL, excluding any `?` query parameters. Do not copy the parent ID or the whole URL.
+5. In your **private Apps Script editor**, replace only the placeholder between quotes in this one setting:
 
-   | Setting in `Code.gs` | Sandbox folder |
-   | --- | --- |
-   | `CLIENTS_FOLDER_ID` | Clients |
-   | `LISTINGS_FOLDER_ID` | Listings |
-   | `LISTING_TEMPLATE_ID` | Listing Template |
-   | `TEMPLATES.renter.id` | Renter Template |
-   | `TEMPLATES.buyer.id` | Buyer Template |
-   | `TEMPLATES.commercial.id` | Commercial Template |
+   ```js
+   const CLONABLE_FOLDER_ID = 'PASTE_CLONABLE_FOLDER_ID';
+   ```
 
-   Leave the public repository's `PASTE_*` placeholders unchanged. A folder ID is not a password, but publishing internal identifiers is unnecessary. Do not make your Drive folders public to make this script work.
+   Keep the placeholder in public files. No parent ID or output ID is configured. A folder ID is not a password, but there is no reason to publish it or paste it into an AI chat. Never make your folders public to get the app working.
+6. Save. Choose **Deploy → Test deployments**, select **Google Workspace Add-on** if prompted for a type, then **Install → Done**. This is not a web-app deployment or Marketplace publication. Reload Drive and open Cloner in the right-side panel. See [Google's test-add-on instructions](https://developers.google.com/workspace/add-ons/how-tos/testing-workspace-addons).
+7. Review authorization before accepting. The manifest requests broad **Drive access** (`drive`) and **script trigger management** (`script.scriptapp`) to schedule the worker. The configured folder ID limits the code's intended task, **not the OAuth permission grant**. There are no Gmail- or Sheets-specific scopes.
 
-5. Save the project. Choose **Deploy → Test deployments**. If prompted, choose the **Google Workspace Add-on** deployment type. Use **Install** to install the test add-on for your account. This is not a web-app deployment or a Marketplace publication.
-6. Open or reload [Google Drive](https://drive.google.com/) in that account. Expand the right-side panel if hidden, and select the Cloner icon. Complete the authorization flow when asked. If the test deployment does not appear, check the account, manifest, and administrator policy against [Google's test-add-on instructions](https://developers.google.com/workspace/add-ons/how-tos/testing-workspace-addons).
-7. Review the permissions before accepting. This manifest requests full **Drive** access (`drive`) to open your configured folders and copy files, and **script trigger management** (`script.scriptapp`) to schedule the worker. The folder IDs restrict the code's intended operation, **not** the breadth of the OAuth grant. It requests no Gmail or Sheets-specific scope. Install only code you have reviewed and trust.
+Authorize only code you have reviewed and trust. An unverified-app warning is not a reason to bypass safeguards: verify the project and permissions. If your administrator blocks installation, stop and ask them. Follow Google's setup guidance for your account rather than changing Cloud projects, enabling billing, or weakening security at random.
 
-An unverified-app warning can occur for a personal test project. Verify that the project is the one you created and review the code and permissions; do not bypass warnings for unfamiliar software. If your administrator blocks installation or authorization, stop and ask them. You do not need to publish the app publicly or change organizational security policies to follow this tutorial. Standard Cloud project and OAuth setup may be necessary for other testing/distribution arrangements; follow Google's documentation rather than enabling billing or unrelated APIs blindly.
+Start from the sidebar button, not the editor's Run button on a callback. Do not create a recurring trigger manually; the code schedules its own workers.
 
-**Do not press Run on `onCreate` as your first test:** it expects an event from the sidebar. Start from the add-on instead. You also do not need to create a recurring trigger manually—the code creates one-shot workers.
+## 3. Smoke-test the copy
 
-## Verify the first copy
+A smoke test is a small trial of the basic path, not a guarantee about large jobs.
 
-1. In Cloner, enter `Demo Client 01` and click **Create new Renter** once.
-2. Use **Check progress**. The card is a snapshot, not a live dashboard. Triggers can start later than their requested delay.
-3. Use **Open folder** to inspect `Clients/Demo Client 01`. It should contain the sample Doc and the nested `Planning/Checklist` Sheet.
-4. Wait for completion, read any **Skipped** entries, and open the copied files. Confirm the originals still exist and have not changed. Compare the folder/file structure manually; counters after an interrupted execution are not an integrity check.
-5. Inspect the destination's sharing. New items may inherit the destination folder's access; the script does not recreate the template's sharing settings.
-6. Choose **Start another**, then try the same name. The duplicate-name warning should refuse a new folder. Use another name for another independent test.
-7. Optionally test **Create listing** after putting one sample document in `Listing Template`.
+1. Click **Copy to Cloned** once. There is no field to fill in or template to select. Do not start another job in a second tab.
+2. Use **Check progress** to refresh the status snapshot. Scheduling may be delayed.
+3. Use **Open folder**. Verify Cloned is a sibling of Clonable: both directly in My Drive, or both inside your optional Cloner Sandbox.
+4. Inspect Welcome Doc, Checklist Sheet, and Documents/Samples/sample.txt inside Cloned. There should not be another enclosing Clonable folder inside it. Open the copied files and compare their contents.
+5. Wait for completion, inspect **Skipped** details, and confirm the original Clonable is unchanged. Check sharing on the new folder and files; source permissions are not duplicated.
+6. Select **Start another**, then **Copy to Cloned** again. The existing sibling Cloned should cause refusal, without overwriting or deleting it.
 
-### If something goes wrong
+For another fresh copy, deliberately rename or remove the existing Cloned **only after activity has stopped** and after inspecting what you want to keep. Resume an unfinished job instead if you want to continue its partial Cloned. Do not rename, move, or edit either tree while work is running or paused.
+
+## Troubleshooting and stopping
 
 | Symptom | What to check |
 | --- | --- |
-| Cannot open a folder | Correct folder ID, correct Google account, and access to that folder. The copy now checks source access before creating a destination. |
-| Copy seems stuck | Refresh with **Check progress**; inspect Apps Script **Executions** for errors. Trigger delays, permissions, and quotas can interrupt work. |
-| Resume appears | Read the error first. **Resume** uses the same partially filled folder. Fix permissions or wait for a quota reset if needed; repeatedly pressing Resume will not remove a quota limit. |
-| Skipped items | Review the reasons and resulting folder. Unsupported/unreadable items may not copy. |
-| Same name already exists | Open the existing folder. Resume an unfinished job, or deliberately rename/remove its disposable output before starting anew. |
-| Want to abandon a job | **Start over** clears job state and queued worker triggers but leaves copied files in Drive. A currently running operation may take time to stop. Inspect the output before any manual deletion. |
+| Cannot open source | The one ID, signed-in account, and source read/copy access. |
+| Wrong source name | The folder must be named exactly `Clonable`, including capitalization. This fails before output. |
+| No accessible parent / ambiguous parent | Use a regular My Drive folder with exactly one accessible parent. The app does not guess an output location. No output should be created. |
+| Cannot create Cloned | You need write access to Clonable's parent, not just access to Clonable. |
+| Cloned already exists | Resume the saved job if appropriate. For a fresh copy, deliberately rename/remove old output after all activity stops. The app never does that for you. |
+| Copy seems stuck | Use Check progress and inspect Apps Script **Executions** for authorization, quota, or trigger errors. |
+| Resume appears | Fix the cause first. Resume uses the same partial Cloned; it cannot remove a quota or repair permissions. |
+| Skipped items | Read the reasons and inspect the result. Done is not a completeness certificate. |
+| Start over / Start another | Reset clears saved job state and queued worker triggers, not copied Drive files. An in-flight operation may take time to stop. |
 
-To finish testing, uninstall the test deployment in Apps Script's **Test deployments** screen and check the **Triggers** page for any remaining `runCloneJob` trigger. Remove that trigger if present. Review account access at [Google Account connections](https://myaccount.google.com/connections). Delete only sandbox output you have inspected and no longer need.
+To uninstall, use **Deploy → Test deployments → Uninstall**. Check the project's **Triggers** page for remaining `runCloneJob` triggers and remove them if present. Inspect Executions before manually cleaning up disposable output. Review account access at [Google Account connections](https://myaccount.google.com/connections).
 
-## How the code is organized
+## Behind the button
 
-| File or function | Role |
-| --- | --- |
-| `Code.gs` | The complete add-on and copy worker; no external libraries |
-| `appsscript.json` | Drive host, homepage callback, logo, timezone, and OAuth scopes |
-| `onHomepage` | Builds the sidebar form or current status card |
-| `onCreate` / `onCreateListing` | Validate the request, create a destination, save a job, schedule work |
-| `runCloneJob` | Copies within a time budget, saves progress, chains a continuation when needed |
-| `onCheckProgress` / `onResume` / `onReset` | Refresh, recover, or abandon the job |
-| `tests/` | Local fake Google services and regression tests |
-| `assets/` | Original Cloner icon, reused for this educational copy |
+`onHomepage` builds the sidebar; `onCreate` validates the source and parent, refuses a sibling Cloned, creates output, and schedules `runCloneJob`. The existing resumable worker copies files and nested folders, saving a queue (folders left to do) and a position in per-user properties. `onCheckProgress`, `onResume`, and `onReset` provide the other controls.
 
-The worker walks a queue of folders instead of keeping its entire position in a recursive call stack. It stores progress in per-user script properties and uses continuation tokens when available. The voluntary slice budget is 4.5 minutes, with a 20-slice chain cap and 20-level nesting cap. These are code settings, **not a guarantee that your account has that much quota available**. Consult [current Apps Script quotas](https://developers.google.com/apps-script/guides/services/quotas). Very wide trees can also exceed the total property-store limit even though individual values are chunked.
+Recovery compares names and counts, not durable source-to-copy identities. Checkpoints are not transactional, concurrent users are not fully coordinated, and very wide trees can exhaust property storage. Do not treat counters as an integrity check.
 
-**Important platform caveat:** the inherited worker assumes a background trigger can use a longer runtime than the sidebar callback and requests another trigger after one second. Google's [installable-trigger guide](https://developers.google.com/apps-script/guides/triggers/installable) says add-ons can use time-driven triggers at most once per hour, and its quota table lists a 30-second Google Workspace add-on runtime. Do not treat this repository's 4.5-minute slicing or rapid chaining as a verified platform guarantee. These assumptions need a live test in your exact deployment; large-copy support may require a separately designed standalone worker. Keep the first template tiny, inspect Executions, and stop if trigger/runtime limits prevent completion. The local tests cannot validate these platform rules.
+**Unresolved platform caveat:** the worker uses a voluntary 4.5-minute slice and requests rapid continuation triggers. Google's [quota table](https://developers.google.com/apps-script/guides/services/quotas) lists a **30-second Google Workspace add-on runtime**, and its [installable-trigger guide](https://developers.google.com/apps-script/guides/triggers/installable) says add-ons can use time-driven triggers **at most once per hour**. The code settings do not prove those assumptions work in this deployment. A live Google test is required; larger copies may need a separately designed standalone worker. Keep the first source tiny and inspect Executions. Local mocks cannot resolve this caveat.
 
-## Run the local tests
+## Local regression suite versus live Google testing
 
-With a current Node.js LTS installed (checked here with Node 22):
+With Node.js installed:
 
 ```sh
 git clone https://github.com/bigpager/google-apps-script-drive-cloner.git
@@ -115,12 +99,12 @@ cd google-apps-script-drive-cloner
 node tests/run.js
 ```
 
-No `npm install` is needed. Tests simulate Drive, cards, time, triggers, and properties. They cover nested copying, skipped files, duplicates, progress, chunked state, interruptions, continuation, and recovery. They do **not** authenticate to Google, prove OAuth installation works, or certify real-world quota/concurrency behavior. Run the sandbox checklist above for a real integration test.
+No dependency installation is needed. The local regression suite simulates Google services to exercise copying, validation, progress, interruption, and recovery. It does not authorize Google, install an add-on, copy actual Drive files, or validate platform quotas. Use the smoke test above for that separate integration check. This documentation does not claim a completed live Google test.
 
-## Make it yours
+## Adapt it carefully
 
-Start by changing the display labels in `TEMPLATES` and the sidebar hints. Keep its internal keys and callback names until you understand their references. For deeper changes, [give your AI agent this self-contained customization prompt](docs/customize-with-ai.md). Require a small, reviewable change and tests before adding Gmail sending, spreadsheet updates, or new scopes.
+Start by changing the harmless contents of Clonable, not the fixed names or button. The [self-contained AI-agent prompt](docs/customize-with-ai.md) keeps this one-folder contract intact. Any future Gmail sending, spreadsheet-cell changes, or new scopes need a separate review and explicit approval.
 
-## Attribution and reuse
+## Reuse
 
-Adapted from the user-provided [DavisGroup project](https://github.com/bigpager/DavisGroup), with its code and icon credited to that source. No upstream license file was present in the inspected snapshot. This educational copy does not invent or substitute a license grant; public visibility alone is not an open-source license. Ask the owner about licensing before redistribution outside the authorized teaching copy.
+No license is currently supplied. Public visibility alone is not an open-source license or permission to redistribute; obtain a license decision from the owner rather than inventing a grant.

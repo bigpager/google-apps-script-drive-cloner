@@ -17,28 +17,29 @@ function setup(spec, options) {
   const env = load(options);
   const { ctx, world } = env;
 
-  const clients = new stubs.FakeFolder('Clients', world);
-  env.registerAs(clients, ctx.CLIENTS_FOLDER_ID);
-
-  const listings = new stubs.FakeFolder('Listings', world);
-  env.registerAs(listings, ctx.LISTINGS_FOLDER_ID);
-
-  const template = stubs.buildTree(spec, world);
-  env.registerAs(template, ctx.TEMPLATES.renter.id);
-
-  env.clients = clients;
-  env.listings = listings;
+  const parent = new stubs.FakeFolder('Sandbox', world);
+  const template = stubs.buildTree({ ...spec, name: 'Clonable' }, world);
+  env.registerAs(template, ctx.CLONABLE_FOLDER_ID);
+  template._parents.push(parent);
+  parent._folders.push(template);
+  env.parent = parent;
+  Object.defineProperty(env, 'outputs', {
+    get: () => parent._folders.filter((folder) => folder !== template),
+  });
   env.template = template;
   return env;
 }
 
-function createEvent(name) {
-  return { parameters: { type: 'renter' }, formInput: { clientName: name } };
+/** Starts the fixed Clonable → Cloned flow without any form inputs. */
+function start(env) {
+  return env.ctx.onCreate({});
 }
 
-/** Kicks off a renter clone and returns the card response from onCreate. */
-function start(env, name) {
-  return env.ctx.onCreate(createEvent(name || 'Ricky Renter'));
+/** Simulate retaining an abandoned output before starting a replacement job. */
+function replaceJob(env) {
+  env.ctx.onReset({});
+  env.outputs.find((folder) => folder.name === 'Cloned').name = 'Previous copy';
+  start(env);
 }
 
 function wideTree(fileCount, folderCount) {
@@ -46,11 +47,11 @@ function wideTree(fileCount, folderCount) {
   for (let i = 0; i < fileCount; i++) files.push('file-' + i + '.txt');
   const folders = [];
   for (let i = 0; i < folderCount; i++) folders.push({ name: 'sub-' + i, files: [], folders: [] });
-  return { name: 'Renter Template', files: files, folders: folders };
+  return { name: 'Clonable', files: files, folders: folders };
 }
 
 const NESTED = {
-  name: 'Renter Template',
+  name: 'Clonable',
   files: ['a.txt', 'b.txt'],
   folders: [
     {
@@ -116,32 +117,68 @@ function jobWrites(env) {
 
 /* ------------------------------------------------- 1. single enumeration */
 
-test('a missing client template creates no destination or background trigger', () => {
+test('a missing source creates no destination or background trigger', () => {
   const env = setup(NESTED);
-  delete env.world.byId[env.ctx.TEMPLATES.renter.id];
+  delete env.world.byId[env.ctx.CLONABLE_FOLDER_ID];
   const response = start(env);
-  assert.match(JSON.stringify(response), /Cannot open the template folder/);
-  assert.strictEqual(env.clients._folders.length, 0);
+  assert.match(JSON.stringify(response), /Cannot open Clonable or its parent/);
+  assert.strictEqual(env.outputs.length, 0);
   assert.strictEqual(env.ctx.readJob_(), null);
   assert.ok(!stubs.workerPending(env.world));
 });
 
-test('a missing listing template creates no destination or background trigger', () => {
+test('a source without an accessible parent creates nothing', () => {
   const env = setup(NESTED);
-  const response = env.ctx.onCreateListing({ formInput: { listingName: 'Demo' } });
-  assert.match(JSON.stringify(response), /Cannot open the template folder/);
-  assert.strictEqual(env.listings._folders.length, 0);
+  env.template._parents = [];
+  const response = start(env);
+  assert.match(JSON.stringify(response), /Cannot find the parent/);
+  assert.strictEqual(env.outputs.length, 0);
   assert.strictEqual(env.ctx.readJob_(), null);
   assert.ok(!stubs.workerPending(env.world));
 });
 
-test('inherited object properties are not valid template choices', () => {
+test('the homepage has one copy button and no name input or template picker', () => {
   const env = setup(NESTED);
-  for (const type of ['constructor', '__proto__', 'toString']) {
-    const response = env.ctx.onCreate({ parameters: { type }, formInput: { clientName: 'Demo' } });
-    assert.match(JSON.stringify(response), /Unknown template type/);
+  const card = env.ctx.onHomepage({});
+  assert.deepStrictEqual(stubs.buttonTexts(card), ['Copy to Cloned']);
+  assert.strictEqual(stubs.findAll(card, (node) => node.type === 'TextInput').length, 0);
+  const action = stubs.findAll(card, (node) => node.type === 'Action')[0];
+  assert.strictEqual(action.props.FunctionName, 'onCreate');
+});
+
+test('event parameters cannot change the fixed source or output name', () => {
+  const env = setup(NESTED);
+  env.ctx.onCreate({ parameters: { sourceId: 'other', name: 'Other' }, formInput: { name: 'Other' } });
+  const job = env.ctx.readJob_();
+  assert.strictEqual(job.name, 'Cloned');
+  assert.strictEqual(job.sourceId, env.ctx.CLONABLE_FOLDER_ID);
+  assert.strictEqual(env.outputs[0].name, 'Cloned');
+});
+
+test('the configured source must be named Clonable', () => {
+  const env = setup(NESTED);
+  env.template.name = 'Wrong folder';
+  assert.match(JSON.stringify(start(env)), /must be named Clonable/);
+  assert.strictEqual(env.outputs.length, 0);
+  assert.ok(!stubs.workerPending(env.world));
+});
+
+test('ambiguous or self-parenting sources are refused', () => {
+  for (const selfParent of [false, true]) {
+    const env = setup(NESTED);
+    env.template._parents = selfParent ? [env.template] : [env.parent, new stubs.FakeFolder('Other', env.world)];
+    assert.match(JSON.stringify(start(env)), /one distinct parent/);
+    assert.strictEqual(env.outputs.length, 0);
+    assert.ok(!stubs.workerPending(env.world));
   }
-  assert.strictEqual(env.clients._folders.length, 0);
+});
+
+test('parent write failures are reported without saving a job', () => {
+  const env = setup(NESTED, { failCreateNames: ['Cloned'] });
+  assert.match(JSON.stringify(start(env)), /Cannot create Cloned/);
+  assert.strictEqual(env.outputs.length, 0);
+  assert.strictEqual(env.ctx.readJob_(), null);
+  assert.ok(!stubs.workerPending(env.world));
 });
 
 test('recovery indexes accept file and folder names matching object properties', () => {
@@ -440,7 +477,7 @@ test('stored job size stays bounded when everything is skipped', () => {
 
 test('a single skip detail cannot be arbitrarily long', () => {
   const huge = 'x'.repeat(3000) + '.txt';
-  const env = setup({ name: 'Renter Template', files: [huge], folders: [] }, {
+  const env = setup({ name: 'Clonable', files: [huge], folders: [] }, {
     failAllCopies: true,
   });
   start(env);
@@ -479,8 +516,8 @@ test('a clean run copies every file and folder into the target', () => {
   start(env);
   env.ctx.runCloneJob();
 
-  const target = env.clients._folders[0];
-  assert.strictEqual(target.name, 'Ricky Renter');
+  const target = env.outputs[0];
+  assert.strictEqual(target.name, 'Cloned');
   assert.deepStrictEqual(target._files.map((f) => f.name).sort(), ['a.txt', 'b.txt']);
   const docs = target._folders.find((f) => f.name === 'Docs');
   assert.ok(docs, 'Docs was not recreated');
@@ -512,22 +549,25 @@ test('a file that cannot be copied is skipped and the rest continue', () => {
   assert.strictEqual(job.skippedCount, 1);
 });
 
-test('onCreate refuses a blank name and an existing client folder', () => {
+test('onCreate refuses an existing Cloned folder without changing either tree', () => {
   const env = setup(NESTED);
-  const blank = env.ctx.onCreate({ parameters: { type: 'renter' }, formInput: { clientName: '  ' } });
-  assert.ok(/Enter a client name/.test(JSON.stringify(blank)), JSON.stringify(blank));
-
-  start(env, 'Ricky Renter');
+  const original = stubs.treePaths(env.template);
+  start(env);
   env.ctx.runCloneJob();
+  const copied = stubs.treePaths(env.outputs[0]);
   env.ctx.onReset({});
-  const dupe = start(env, 'Ricky Renter');
+  const dupe = start(env);
   assert.ok(/already exists/.test(JSON.stringify(dupe)), JSON.stringify(dupe));
+  assert.strictEqual(env.outputs.length, 1);
+  assert.deepStrictEqual(stubs.treePaths(env.outputs[0]), copied);
+  assert.deepStrictEqual(stubs.treePaths(env.template), original);
+  assert.ok(!stubs.workerPending(env.world));
 });
 
 test('a second clone is refused while one is running', () => {
   const env = setup(NESTED);
-  start(env, 'One');
-  const second = start(env, 'Two');
+  start(env);
+  const second = start(env);
   assert.ok(/already running/.test(JSON.stringify(second)), JSON.stringify(second));
 });
 
@@ -535,7 +575,7 @@ test('a job stored in the old counting format still renders', () => {
   // An in-flight job written by the previous version can outlive a deploy.
   const env = setup(NESTED);
   const legacy = {
-    status: 'running', phase: 'counting', type: 'renter', label: 'Renter',
+    status: 'running', phase: 'counting', label: 'Clonable',
     name: 'Legacy', targetId: 'x', url: 'https://drive.google.com/legacy',
     folders: 1, files: 2, totalFolders: 9, totalFiles: 40, total: 49,
     estimated: true, current: 'a.txt', startedAt: 1, skipped: ['a — boom'],
@@ -549,22 +589,15 @@ test('a job stored in the old counting format still renders', () => {
   assert.ok(skipped && skipped.top.indexOf('1') !== -1, JSON.stringify(skipped));
 });
 
-test('the listing flow shares the same worker and progress shape', () => {
+test('Cloned is a sibling of Clonable, not a nested output', () => {
   const env = setup(NESTED);
-  const listingTemplate = stubs.buildTree(
-    { name: 'Listing Template', files: ['l1.txt'], folders: [{ name: 'L', files: ['l2.txt'], folders: [] }] },
-    env.world
-  );
-  env.registerAs(listingTemplate, env.ctx.LISTING_TEMPLATE_ID);
-
-  env.ctx.onCreateListing({ formInput: { listingName: '12 Main St' } });
+  const original = stubs.treePaths(env.template);
+  start(env);
   env.ctx.runCloneJob();
-
-  const job = env.ctx.readJob_();
-  assert.strictEqual(job.status, 'done');
-  assert.strictEqual(job.files, 2);
-  assert.strictEqual(job.folders, 1);
-  assert.strictEqual(job.phase, 'done');
+  assert.deepStrictEqual(env.parent._folders.map((folder) => folder.name), ['Clonable', 'Cloned']);
+  assert.strictEqual(env.outputs[0]._parents[0], env.parent);
+  assert.deepStrictEqual(stubs.treePaths(env.template), original);
+  assertMirrors(env, env.outputs[0]);
 });
 
 /* ------------------------------------------ 7. the 9 kB property ceiling */
@@ -575,7 +608,7 @@ test('a file name larger than the property limit never reaches storage', () => {
   // it is on has to survive a real setProperty.
   const huge = 'x'.repeat(10000) + '.txt';
   const env = setup({
-    name: 'Renter Template',
+    name: 'Clonable',
     files: ['f0.txt', 'f1.txt', 'f2.txt', 'f3.txt', huge],
     folders: [],
   });
@@ -609,7 +642,7 @@ test('a file name larger than the property limit never reaches storage', () => {
 test('a folder name larger than the property limit never reaches storage', () => {
   const huge = 'd'.repeat(10000);
   const env = setup({
-    name: 'Renter Template',
+    name: 'Clonable',
     files: ['f0.txt', 'f1.txt', 'f2.txt', 'f3.txt'],
     folders: [{ name: huge, files: [], folders: [] }],
   });
@@ -630,8 +663,8 @@ test('the error path cannot be blocked by an oversized item name', () => {
   // back mid-run — must still be able to record its own failure.
   const env = setup(NESTED);
   const stuck = {
-    status: 'running', phase: 'copying', type: 'renter', label: 'Renter',
-    sourceId: env.ctx.TEMPLATES.renter.id, name: 'Ricky Renter',
+    status: 'running', phase: 'copying', label: 'Clonable',
+    sourceId: env.ctx.CLONABLE_FOLDER_ID, name: 'Cloned',
     targetId: 'no-such-folder-id', url: 'https://drive.google.com/x',
     folders: 0, files: 0, discoveredFolders: 0, discoveredFiles: 0,
     attempts: 0, current: 'y'.repeat(10000), startedAt: env.world.clock.ms,
@@ -713,28 +746,26 @@ test('a job started after a reset is not clobbered by the old worker', () => {
     onCopy(name, world) {
       if (switched || world.stats.copiedFiles.length !== 3) return;
       switched = true;
-      env.ctx.onReset({});
-      env.ctx.onCreate({
-        parameters: { type: 'renter' },
-        formInput: { clientName: 'Second Client' },
-      });
+      replaceJob(env);
     },
   });
-  start(env, 'First Client');
+  start(env);
+  const firstId = env.ctx.readJob_().id;
   env.ctx.runCloneJob();
 
   const handover = env.ctx.readJob_();
   assert.ok(handover, 'the newly started job was deleted');
-  assert.strictEqual(
-    handover.name,
-    'Second Client',
+  assert.notStrictEqual(
+    handover.id,
+    firstId,
     'the superseded worker overwrote the job the user had just started'
   );
 
   // And the replacement still runs to completion like any other job.
   env.ctx.runCloneJob();
   const finished = env.ctx.readJob_();
-  assert.strictEqual(finished.name, 'Second Client');
+  assert.strictEqual(finished.id, handover.id);
+  assert.strictEqual(finished.name, 'Cloned');
   assert.strictEqual(finished.status, 'done', 'the new job could not finish');
   assert.strictEqual(finished.files, 20);
 });
@@ -767,7 +798,7 @@ test('a clone too big for one slice finishes across several slices', () => {
     job.status, 'done', 'job ended as "' + job.status + '": ' + job.error
   );
   assertCopiedOnce(env);
-  assertMirrors(env, env.clients._folders[0]);
+  assertMirrors(env, env.outputs[0]);
 });
 
 test('the top-level skeleton is created before anything nested', () => {
@@ -785,7 +816,7 @@ test('the top-level skeleton is created before anything nested', () => {
     'folders were created depth-first'
   );
   assertCopiedOnce(env);
-  assertMirrors(env, env.clients._folders[0]);
+  assertMirrors(env, env.outputs[0]);
 });
 
 /* ------------------------------------------------ 11. persisted resume state */
@@ -796,7 +827,7 @@ function wideNested(n) {
   for (let i = 0; i < n; i++) {
     folders.push({ name: 'sub-' + i, files: ['f-' + i + '.txt'], folders: [] });
   }
-  return { name: 'Renter Template', files: [], folders: folders };
+  return { name: 'Clonable', files: [], folders: folders };
 }
 
 function storeKeys(env, prefix) {
@@ -832,7 +863,7 @@ test('a pending queue too wide for one property value is chunked, not rejected',
   );
   assert.strictEqual(env.ctx.readJob_().status, 'done');
   assertCopiedOnce(env);
-  assertMirrors(env, env.clients._folders[0]);
+  assertMirrors(env, env.outputs[0]);
 });
 
 test('a continuation token too large to store degrades instead of failing', () => {
@@ -860,7 +891,7 @@ test('resume state is honoured only while it carries the current job id', () => 
   const env = setup(NESTED);
   start(env);
   const job = env.ctx.readJob_();
-  const target = env.clients._folders[0];
+  const target = env.outputs[0];
   const docs = env.template._folders.find((f) => f.name === 'Docs');
 
   // A slice that already finished the root pass and queued Docs.
@@ -890,7 +921,7 @@ test('resume state is honoured only while it carries the current job id', () => 
   const env2 = setup(NESTED);
   start(env2);
   const job2 = env2.ctx.readJob_();
-  const target2 = env2.clients._folders[0];
+  const target2 = env2.outputs[0];
   const docs2 = env2.template._folders.find((f) => f.name === 'Docs');
   const stranger = target2.createFolder('Docs');
   job2.seeded = true;
@@ -977,14 +1008,11 @@ test('a worker superseded at its last checkpoint schedules no continuation', () 
       if (switched || key !== env.ctx.JOB_KEY) return;
       if (world.clock.ms - sliceStart < env.ctx.SLICE_MS) return;
       switched = true;
-      env.ctx.onReset({});
-      env.ctx.onCreate({
-        parameters: { type: 'renter' },
-        formInput: { clientName: 'Second Client' },
-      });
+      replaceJob(env);
     },
   }));
-  start(env, 'First Client');
+  start(env);
+  const firstId = env.ctx.readJob_().id;
 
   sliceStart = env.world.clock.ms;
   const before = env.world.stats.triggersCreated;
@@ -999,7 +1027,7 @@ test('a worker superseded at its last checkpoint schedules no continuation', () 
     stubs.workerPending(env.world),
     'the new job lost the trigger it had just scheduled'
   );
-  assert.strictEqual(env.ctx.readJob_().name, 'Second Client');
+  assert.notStrictEqual(env.ctx.readJob_().id, firstId);
 });
 
 test('a worker superseded mid-pass leaves the new job alone', () => {
@@ -1008,14 +1036,11 @@ test('a worker superseded mid-pass leaves the new job alone', () => {
     onCopy(name, world) {
       if (switched || world.stats.copiedFiles.length !== 5) return;
       switched = true;
-      env.ctx.onReset({});
-      env.ctx.onCreate({
-        parameters: { type: 'renter' },
-        formInput: { clientName: 'Second Client' },
-      });
+      replaceJob(env);
     },
   }));
-  start(env, 'First Client');
+  start(env);
+  const firstId = env.ctx.readJob_().id;
 
   const before = env.world.stats.triggersCreated;
   env.ctx.runCloneJob();
@@ -1025,12 +1050,12 @@ test('a worker superseded mid-pass leaves the new job alone', () => {
     env.world.stats.triggersCreated - before, 1,
     'the superseded worker scheduled a continuation of its own'
   );
-  const second = env.clients._folders.find((f) => f.name === 'Second Client');
+  const second = env.outputs.find((f) => f.name === 'Cloned');
   assert.deepStrictEqual(
     second._files.map((f) => f.name), [],
     'the superseded worker copied into the target of the job that replaced it'
   );
-  assert.strictEqual(env.ctx.readJob_().name, 'Second Client');
+  assert.notStrictEqual(env.ctx.readJob_().id, firstId);
 });
 
 test('a clone that will not stop chaining stops honestly instead', () => {
@@ -1117,7 +1142,7 @@ test('a slice killed mid-folder does not copy the un-checkpointed files twice', 
     job.status, 'done', 'the job ended as "' + job.status + '": ' + job.error
   );
   assertCopiedOnce(env);
-  assertMirrors(env, env.clients._folders[0]);
+  assertMirrors(env, env.outputs[0]);
 });
 
 test('a resume whose continuation token has expired still copies each file once', () => {
@@ -1142,7 +1167,7 @@ test('a resume whose continuation token has expired still copies each file once'
     job.status, 'done', 'the job ended as "' + job.status + '": ' + job.error
   );
   assertCopiedOnce(env);
-  assertMirrors(env, env.clients._folders[0]);
+  assertMirrors(env, env.outputs[0]);
 });
 
 test('duplicate names in the template survive a resume intact', () => {
@@ -1150,7 +1175,7 @@ test('duplicate names in the template survive a resume intact', () => {
   // already copied?" is a counting question. A set-based check would drop the
   // second "notes.txt" and the second "Shared" on every resume.
   const DUPLICATES = {
-    name: 'Renter Template',
+    name: 'Clonable',
     files: ['notes.txt', 'notes.txt', 'unique.txt'],
     folders: [
       { name: 'Shared', files: ['x.txt'], folders: [] },
@@ -1171,7 +1196,7 @@ test('duplicate names in the template survive a resume intact', () => {
   env.world.crashed = false;
   resumeUntilSettled(env);
 
-  const target = env.clients._folders[0];
+  const target = env.outputs[0];
   const job = env.ctx.readJob_();
   assert.strictEqual(
     job.status, 'done', 'the job ended as "' + job.status + '": ' + job.error
@@ -1192,7 +1217,7 @@ function deepTree(depth) {
   for (let i = depth - 1; i >= 1; i--) {
     spec = { name: 'level-' + i, files: [], folders: [spec] };
   }
-  return { name: 'Renter Template', files: [], folders: [spec] };
+  return { name: 'Clonable', files: [], folders: [spec] };
 }
 
 test('a paused job says it is continuing by itself, not that it has stalled', () => {
@@ -1266,7 +1291,7 @@ test('Resume carries on into the same folder instead of starting a new clone', (
   // execution died. This is the state the user is actually looking at.
   env.world.stats.triggers.length = 0;
   env.world.clock.advance(env.ctx.STALL_MS + 1000);
-  const foldersBefore = env.clients._folders.length;
+  const foldersBefore = env.outputs.length;
   const copiedBefore = env.world.stats.copiedFiles.length;
 
   env.ctx.onResume({});
@@ -1278,9 +1303,9 @@ test('Resume carries on into the same folder instead of starting a new clone', (
     job.targetId, paused.targetId, 'Resume pointed the clone at another folder'
   );
   assert.strictEqual(
-    env.clients._folders.length,
+    env.outputs.length,
     foldersBefore,
-    'Resume created a second client folder; the first one is now orphaned'
+    'Resume created a second output folder; the first one is now orphaned'
   );
   assert.ok(stubs.workerPending(env.world), 'Resume queued no worker');
   assert.strictEqual(
@@ -1297,7 +1322,7 @@ test('Resume carries on into the same folder instead of starting a new clone', (
     'Resume finished without copying anything that was still outstanding'
   );
   assertCopiedOnce(env);
-  assertMirrors(env, env.clients._folders[0]);
+  assertMirrors(env, env.outputs[0]);
 });
 
 test('Resume after the slice cap gets a fresh budget rather than stopping again', () => {
@@ -1348,7 +1373,7 @@ test('a legacy job with no saved position repairs itself instead of copying twic
     job.status, 'done', 'the job ended as "' + job.status + '": ' + job.error
   );
   assertCopiedOnce(env);
-  assertMirrors(env, env.clients._folders[0]);
+  assertMirrors(env, env.outputs[0]);
 });
 
 test('a tree deeper than the cap is recorded as a skip rather than followed', () => {

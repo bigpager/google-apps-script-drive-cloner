@@ -1,6 +1,5 @@
 /**
- * Cloner — clones a client folder template in Google Drive
- * into the Clients folder under a new client name.
+ * Cloner — copies Clonable into a sibling folder named Cloned in Google Drive.
  *
  * The copy runs in a background trigger because add-on card
  * callbacks are capped at 30 seconds.
@@ -18,11 +17,11 @@
  * sidebar being closed and reopened.
  */
 
-// Configure these in your private Apps Script editor, not a public commit.
-// Keep destination folders outside every template's folder tree.
-const CLIENTS_FOLDER_ID = 'PASTE_CLIENTS_FOLDER_ID';
-const LISTING_TEMPLATE_ID = 'PASTE_LISTING_TEMPLATE_ID';
-const LISTINGS_FOLDER_ID = 'PASTE_LISTINGS_FOLDER_ID';
+// Configure only the source ID in your private Apps Script editor.
+// Cloned is created alongside Clonable, never inside it.
+const CLONABLE_FOLDER_ID = 'PASTE_CLONABLE_FOLDER_ID';
+const SOURCE_NAME = 'Clonable';
+const COPY_NAME = 'Cloned';
 const JOB_KEY = 'cloneJob';
 /** In-flight position inside the folder being copied right now. */
 const CURSOR_KEY = 'cloneCursor';
@@ -77,21 +76,6 @@ const MAX_SKIPPED_DETAILS = 25;
 /** Longest a single skip reason may be before it is trimmed. */
 const MAX_SKIP_DETAIL_CHARS = 160;
 
-const TEMPLATES = {
-  renter: {
-    label: 'Renter',
-    id: 'PASTE_RENTER_TEMPLATE_ID',
-  },
-  buyer: {
-    label: 'Buyer',
-    id: 'PASTE_BUYER_TEMPLATE_ID',
-  },
-  commercial: {
-    label: 'Commercial Lease',
-    id: 'PASTE_COMMERCIAL_TEMPLATE_ID',
-  },
-};
-
 /* ---------------------------------------------------------------- UI */
 
 function onHomepage(e) {
@@ -103,87 +87,67 @@ function onHomepage(e) {
     return statusCard_(job);
   }
 
-  const section = CardService.newCardSection().addWidget(
-    CardService.newTextInput()
-      .setFieldName('clientName')
-      .setTitle('Client name')
-      .setHint('Spaces are fine, e.g. "Ricky Renter"')
-  );
-
-  Object.keys(TEMPLATES).forEach(function (key) {
-    section.addWidget(
-      CardService.newTextButton()
-        .setText('Create new ' + TEMPLATES[key].label)
-        .setOnClickAction(
-          CardService.newAction()
-            .setFunctionName('onCreate')
-            .setParameters({ type: key })
-        )
-    );
-  });
-
-  const listingSection = CardService.newCardSection()
-    .addWidget(CardService.newDivider())
+  const section = CardService.newCardSection()
     .addWidget(
-      CardService.newTextInput()
-        .setFieldName('listingName')
-        .setTitle('Listing name')
-        .setHint('Enter the name for the new listing folder')
+      CardService.newTextParagraph().setText(
+        'Copy Clonable and its contents into a new sibling folder named Cloned. ' +
+        'The original stays unchanged. An existing Cloned folder is never overwritten.'
+      )
     )
     .addWidget(
       CardService.newTextButton()
-        .setText('Create listing')
+        .setText('Copy to Cloned')
         .setOnClickAction(
-          CardService.newAction().setFunctionName('onCreateListing')
+          CardService.newAction().setFunctionName('onCreate')
         )
     );
 
   return CardService.newCardBuilder()
     .setHeader(CardService.newCardHeader().setTitle('Cloner'))
     .addSection(section)
-    .addSection(listingSection)
     .build();
 }
 
+/** One fixed source and output; event parameters cannot redirect the copy. */
 function onCreate(e) {
-  const type = readParam_(e, 'type');
-  const name = readInput_(e, 'clientName').trim();
-
-  if (!Object.prototype.hasOwnProperty.call(TEMPLATES, type)) {
-    return notify_('Unknown template type: ' + type);
-  }
-  if (!name) return notify_('Enter a client name first.');
-
   const running = readJob_();
   if (running && running.status === 'running') {
     return notify_('A clone is already running. Wait for it to finish.');
   }
 
-  let clients;
+  let source;
+  let parent;
   try {
-    clients = DriveApp.getFolderById(CLIENTS_FOLDER_ID);
+    source = DriveApp.getFolderById(CLONABLE_FOLDER_ID);
+    if (source.getName() !== SOURCE_NAME) {
+      return notify_('The configured source must be named Clonable. Check its name and folder ID.');
+    }
+    const parents = source.getParents();
+    if (!parents.hasNext()) {
+      return notify_('Cannot find the parent of Clonable. Use a regular folder in My Drive.');
+    }
+    parent = parents.next();
+    if (parents.hasNext() || parent.getId() === source.getId()) {
+      return notify_('Clonable must have one distinct parent folder. Nothing created.');
+    }
+    if (parent.getFoldersByName(COPY_NAME).hasNext()) {
+      return notify_('Cloned already exists alongside Clonable. Nothing created.');
+    }
   } catch (err) {
-    return notify_('Cannot open the Clients folder: ' + err.message);
+    return notify_('Cannot open Clonable or its parent: ' + err.message);
   }
 
-  if (clients.getFoldersByName(name).hasNext()) {
-    return notify_('"' + name + '" already exists in Clients. Nothing created.');
-  }
-
+  let target;
   try {
-    DriveApp.getFolderById(TEMPLATES[type].id);
+    target = parent.createFolder(COPY_NAME);
   } catch (err) {
-    return notify_('Cannot open the template folder: ' + err.message);
+    return notify_('Cannot create Cloned alongside Clonable: ' + err.message);
   }
-
-  // Fast: create the destination now so we can show a link immediately.
-  const target = clients.createFolder(name);
 
   const job = newJob_({
-    type: type,
-    label: TEMPLATES[type].label,
-    sourceId: TEMPLATES[type].id,
-    name: name,
+    label: SOURCE_NAME,
+    sourceId: source.getId(),
+    name: COPY_NAME,
     target: target,
   });
   // A new job starts from nothing. Anything left over is a previous job's
@@ -197,53 +161,8 @@ function onCreate(e) {
   return CardService.newActionResponseBuilder()
     .setNavigation(CardService.newNavigation().pushCard(statusCard_(job)))
     .setNotification(
-      CardService.newNotification().setText('Started "' + name + '"')
+      CardService.newNotification().setText('Started copying Clonable to Cloned')
     )
-    .build();
-}
-
-/** Creates a named listing folder and starts the shared clone worker. */
-function onCreateListing(e) {
-  const name = readInput_(e, 'listingName').trim();
-  if (!name) return notify_('Enter a listing name first.');
-
-  const running = readJob_();
-  if (running && running.status === 'running') {
-    return notify_('A clone is already running. Wait for it to finish.');
-  }
-
-  let listings;
-  try {
-    listings = DriveApp.getFolderById(LISTINGS_FOLDER_ID);
-  } catch (err) {
-    return notify_('Cannot open the Listings folder: ' + err.message);
-  }
-  if (listings.getFoldersByName(name).hasNext()) {
-    return notify_('"' + name + '" already exists in Listings. Nothing created.');
-  }
-
-  try {
-    DriveApp.getFolderById(LISTING_TEMPLATE_ID);
-  } catch (err) {
-    return notify_('Cannot open the template folder: ' + err.message);
-  }
-
-  const target = listings.createFolder(name);
-  const job = newJob_({
-    type: 'listing',
-    label: 'Listing',
-    sourceId: LISTING_TEMPLATE_ID,
-    name: name,
-    target: target,
-  });
-  clearResumeState_(job);
-  persistJob_(job);
-  clearWorkerTriggers_();
-  ScriptApp.newTrigger(WORKER_FN).timeBased().after(1000).create();
-
-  return CardService.newActionResponseBuilder()
-    .setNavigation(CardService.newNavigation().pushCard(statusCard_(job)))
-    .setNotification(CardService.newNotification().setText('Started listing "' + name + '"'))
     .build();
 }
 
@@ -320,13 +239,12 @@ function onResume(e) {
 
 /* ------------------------------------------------------------ WORKER */
 
-/** A fresh job record. One shape, used by both entry points. */
+/** A fresh job record for the copy worker. */
 function newJob_(spec) {
   return {
     status: 'running',
     // There is no counting phase any more: the worker copies from the start.
     phase: 'copying',
-    type: spec.type,
     label: spec.label,
     sourceId: spec.sourceId,
     name: spec.name,
@@ -375,8 +293,8 @@ function runCloneJob() {
   job.slices = (job.slices || 0) + 1;
 
   try {
-    const sourceId = job.sourceId || (TEMPLATES[job.type] && TEMPLATES[job.type].id);
-    if (!sourceId) throw new Error('Unknown template type: ' + job.type);
+    const sourceId = job.sourceId;
+    if (!sourceId) throw new Error('The saved job has no source folder. Start over.');
 
     // Resolve both ends up front. A template or target that has gone missing
     // is a job-level failure the user must see, not a per-folder skip.
@@ -1205,7 +1123,7 @@ function jobView_(job) {
     // Jobs written by the counting-era version can still be in storage.
     phase: job.phase === 'counting' ? 'copying' : job.phase || 'copying',
     name: job.name || '',
-    label: job.label || (TEMPLATES[job.type] ? TEMPLATES[job.type].label : job.type),
+    label: job.label || SOURCE_NAME,
     folders: job.folders || 0,
     files: job.files || 0,
     discoveredFolders: job.discoveredFolders || 0,
@@ -1288,8 +1206,7 @@ function newJobId_() {
 }
 
 /**
- * Unconditional write. Only the two entry points may claim the slot this way:
- * they are what a new job is, and there is nothing yet to be superseded by.
+ * Unconditional write used to start or resume a job.
  */
 function persistJob_(job) {
   job.updatedAt = Date.now();
@@ -1324,24 +1241,4 @@ function clearWorkerTriggers_() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (t.getHandlerFunction() === WORKER_FN) ScriptApp.deleteTrigger(t);
   });
-}
-
-/* ------------------------------------------------------- EVENT SHIMS */
-
-function readInput_(e, field) {
-  if (e && e.formInput && e.formInput[field] != null) {
-    return String(e.formInput[field]);
-  }
-  const inputs = e && e.commonEventObject && e.commonEventObject.formInputs;
-  const entry = inputs && inputs[field];
-  const values = entry && entry.stringInputs && entry.stringInputs.value;
-  return values && values.length ? String(values[0]) : '';
-}
-
-function readParam_(e, key) {
-  if (e && e.parameters && e.parameters[key] != null) {
-    return String(e.parameters[key]);
-  }
-  const params = e && e.commonEventObject && e.commonEventObject.parameters;
-  return params && params[key] != null ? String(params[key]) : '';
 }

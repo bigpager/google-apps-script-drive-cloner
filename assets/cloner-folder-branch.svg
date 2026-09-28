@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- Cloner add-on mark: a source folder branching into two copied nodes. -->
+  <!-- Transparent canvas, no text. Content bbox x 13-113, y 26-102 (~10% padding on the widest axis). -->
+
+  <!-- Folder back sheet + tab -->
+  <path fill="#1A73E8"
+        d="M18,26 H36 a5,5 0 0 1 3.54,1.46 L44,32 a5,5 0 0 0 3.54,1.46 H61 a5,5 0 0 1 5,5 V97 a5,5 0 0 1 -5,5 H18 a5,5 0 0 1 -5,-5 V31 a5,5 0 0 1 5,-5 Z"/>
+
+  <!-- Folder front face -->
+  <rect fill="#4285F4" x="13" y="44" width="53" height="58" rx="5"/>
+
+  <!-- Branch connectors -->
+  <path fill="none" stroke="#174EA6" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"
+        d="M66,64 H78 V40 H89 M78,64 V88 H89"/>
+
+  <!-- Copied nodes -->
+  <circle fill="#174EA6" cx="101" cy="40" r="12"/>
+  <circle fill="#174EA6" cx="101" cy="88" r="12"/>
+</svg>

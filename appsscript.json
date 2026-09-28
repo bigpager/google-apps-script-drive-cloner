@@ -1,0 +1,28 @@
+{
+  "timeZone": "America/New_York",
+  "runtimeVersion": "V8",
+  "exceptionLogging": "STACKDRIVER",
+  "oauthScopes": [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/script.scriptapp"
+  ],
+  "addOns": {
+    "common": {
+      "name": "Cloner",
+      "logoUrl": "https://raw.githubusercontent.com/bigpager/google-apps-script-drive-cloner/main/assets/cloner-folder-branch-128.png",
+      "openLinkUrlPrefixes": [
+        "https://drive.google.com/"
+      ],
+      "homepageTrigger": {
+        "runFunction": "onHomepage",
+        "enabled": true
+      }
+    },
+    "drive": {
+      "homepageTrigger": {
+        "runFunction": "onHomepage",
+        "enabled": true
+      }
+    }
+  }
+}
